@@ -9,11 +9,11 @@
 #include "lodepng.h"
 #include "GridGraph_2D_4C.h"
 
-#define DEFAULT_IMAGE_SOURCE_1 "goat2.png"
+#define DEFAULT_IMAGE_SOURCE_1 "cat.png"
 #define DEFAULT_IMAGE_SOURCE_2 "cat.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
 #define DEFAULT_STITCH_MARGIN 100
-#define DEFAULT_MODE GradientStitch
+#define DEFAULT_MODE SimpleStitch
 
 using namespace std;
 
@@ -78,6 +78,7 @@ void performStitching(ScalarField field1, ScalarField field2, ScalarField* merge
 		{
 			auto weight = fabs(field1[y][x] - field2[y][x + 1]) + fabs(field2[y][x] - field1[y][x + 1]);
 			grid.set_neighbor_cap(grid.node_id(x, y), 1, 0, weight);
+			grid.set_neighbor_cap(grid.node_id(x + 1, y), -1, 0, weight);
 		}
 	}
 
@@ -86,7 +87,8 @@ void performStitching(ScalarField field1, ScalarField field2, ScalarField* merge
 		for (size_t x = 0; x < gridWidth; ++x)
 		{
 			auto weight = fabs(field1[y][x] - field2[y + 1][x]) + fabs(field2[y][x] - field1[y + 1][x]);
-			grid.set_neighbor_cap(grid.node_id(x, y), 1, 0, weight);
+			grid.set_neighbor_cap(grid.node_id(x, y), 0, 1, weight);
+			grid.set_neighbor_cap(grid.node_id(x, y + 1), 0, -1, weight);
 		}
 	}
 
@@ -303,10 +305,10 @@ int main(int argc, char** argv)
 		ScalarField image1Remainder;
 		ScalarField image2Margin;
 		ScalarField image2Remainder;
-		subRange(image1Remainder, 0, 0, imageArray1[0].size() - stitchMargin, imageArray1.size(), &image1Remainder);
+		subRange(imageArray1, 0, 0, imageArray1[0].size() - stitchMargin, imageArray1.size(), &image1Remainder);
 		subRange(imageArray1, imageArray1[0].size() - stitchMargin, 0, stitchMargin, imageArray1.size(), &image1Margin);
 		subRange(imageArray2, 0, 0, stitchMargin, imageArray2.size(), &image2Margin);
-		subRange(image2Remainder, stitchMargin, 0, imageArray2[0].size() - stitchMargin, imageArray2.size(), &image2Remainder);
+		subRange(imageArray2, stitchMargin, 0, imageArray2[0].size() - stitchMargin, imageArray2.size(), &image2Remainder);
 
 		cout << "Stitching images..." << endl;
 		ScalarField mergeResult;
