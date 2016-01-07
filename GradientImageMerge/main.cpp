@@ -13,7 +13,7 @@
 #define DEFAULT_IMAGE_SOURCE_2 "cat.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
 #define DEFAULT_STITCH_MARGIN 100
-#define DEFAULT_MODE SimpleStitch
+#define DEFAULT_MODE GradientStitch
 
 using namespace std;
 
@@ -42,6 +42,24 @@ template <typename t>
 inline vec2<t> difference(vec2<t> a, vec2<t> b)
 {
 	return vec2<t> { a.x - b.x, a.y - b.y };
+}
+
+template <typename t>
+inline t distanceSquared(vec2<t> a, vec2<t> b)
+{
+	return magnitudeSquared(difference(a, b));
+}
+
+template <typename t1, typename t2>
+inline vec2<t1> scalarMult(vec2<t1> v, t2 a)
+{
+	return vec2<t1> { v.x * a, v.y * a };
+}
+
+template <typename t>
+inline vec2<t> vecAdd(vec2<t> a, vec2<t> b)
+{
+	return vec2<t> { a.x + b.x, a.y + b.y };
 }
 
 typedef vector<vector<float> > ScalarField;
@@ -104,6 +122,65 @@ void performStitching(ScalarField field1, ScalarField field2, ScalarField* merge
 				(*mergeResult)[y][x] = field1[y][x];
 			else
 				(*mergeResult)[y][x] = field2[y][x];
+		}
+	}
+}
+
+void performGradientStitching(VectorField field1, VectorField field2, ScalarField* maskResult)
+{
+	assert(field1.size() == field2.size());
+	assert(field1[0].size() == field2[0].size());
+
+	auto gridWidth = field1[0].size();
+	auto gridHeight = field1.size();
+
+	maskResult->resize(gridHeight);
+	for (auto& row : *maskResult)
+		row.resize(gridWidth);
+
+	float bigNumber = 1000.0f * gridWidth * gridHeight;
+	Grid grid(gridWidth, gridHeight);
+
+	// Set terminals
+	for (size_t y = 0; y < gridHeight; ++y)
+	{
+		grid.set_terminal_cap(grid.node_id(0, y), bigNumber, 0.0f);
+		grid.set_terminal_cap(grid.node_id(gridWidth - 1, y), 0.0f, bigNumber);
+	}
+
+	// Set grid
+	for (size_t y = 0; y < gridHeight; ++y)
+	{
+		for (size_t x = 0; x < gridWidth - 1; ++x)
+		{
+			auto weight = distanceSquared(field1[y][x], field2[y][x + 1]) + distanceSquared(field2[y][x], field1[y][x + 1]);
+			grid.set_neighbor_cap(grid.node_id(x, y), 1, 0, weight);
+			grid.set_neighbor_cap(grid.node_id(x + 1, y), -1, 0, weight);
+		}
+	}
+
+	for (size_t y = 0; y < gridHeight - 1; ++y)
+	{
+		for (size_t x = 0; x < gridWidth; ++x)
+		{
+			auto weight = distanceSquared(field1[y][x], field2[y + 1][x]) + distanceSquared(field2[y][x], field1[y + 1][x]);
+			grid.set_neighbor_cap(grid.node_id(x, y), 0, 1, weight);
+			grid.set_neighbor_cap(grid.node_id(x, y + 1), 0, -1, weight);
+		}
+	}
+
+	// Compute maxflow
+	grid.compute_maxflow();
+
+	for (size_t y = 0; y < gridHeight; ++y)
+	{
+		for (size_t x = 0; x < gridWidth; ++x)
+		{
+			auto segment = grid.get_segment(grid.node_id(x, y));
+			if (segment == 0)
+				(*maskResult)[y][x] = 1.0f;
+			else
+				(*maskResult)[y][x] = 0.0f;
 		}
 	}
 }
@@ -188,8 +265,56 @@ void computeGradient(const ScalarField& scalarField, VectorField* output)
 		}
 }
 
+// Apply a mask to two images
+template <typename t>
+void applyMask(const vector<vector<t> >& field1, const vector<vector<t> >& field2, const ScalarField& mask, vector<vector<t> >* output)
+{
+	assert(field1.size() == field2.size());
+	assert(field1[0].size() == field2[0].size());
+
+	size_t width = field1[0].size();
+	size_t height = field1.size();
+
+	output->resize(field1.size());
+	for (auto& vec : *output)
+		vec.resize(field1[0].size());
+
+	for (size_t y = 0; y < height; ++y)
+	{
+		for (size_t x = 0; x < width; ++x)
+		{
+			float maskValue = mask[y][x];
+			(*output)[y][x] = maskValue * field1[y][x] + (1.0f - maskValue) * field2[y][x];
+		}
+	}
+}
+
+// Apply a mask to two images
+template < >
+void applyMask<vec2<float> >(const VectorField& field1, const VectorField& field2, const ScalarField& mask, VectorField* output)
+{
+	assert(field1.size() == field2.size());
+	assert(field1[0].size() == field2[0].size());
+
+	size_t width = field1[0].size();
+	size_t height = field1.size();
+
+	output->resize(field1.size());
+	for (auto& vec : *output)
+		vec.resize(field1[0].size());
+
+	for (size_t y = 0; y < height; ++y)
+	{
+		for (size_t x = 0; x < width; ++x)
+		{
+			float maskValue = mask[y][x];
+			(*output)[y][x] = vecAdd(scalarMult(field1[y][x], maskValue), scalarMult(field2[y][x], 1.0f - maskValue));
+		}
+	}
+}
+
 // Convert gradient data to image data
-void convertGradientToImageData(VectorField& grad, vector<unsigned char>* output)
+void convertGradientToImageData(const VectorField& grad, vector<unsigned char>* output)
 {
 	output->resize(4 * grad.size() * grad[0].size());
 	int index = 0;
@@ -259,6 +384,75 @@ unsigned int saveFloatMatrixToPNG(const string& filename, const ScalarField& dat
 	// Save the resulting image
 	return lodepng::encode(filename, outputImageData, static_cast<unsigned int>(data[0].size()),
 		static_cast<unsigned int>(data.size()));
+}
+
+template <typename t>
+void copyField(const vector<vector<t> >& src, vector<vector<t> >* dest)
+{
+	int width = src[0].size();
+	for (int y = 0, height = src.size(); y < height; ++y)
+		memcpy((*dest)[y].data(), src[y].data(), sizeof(t) * width);
+}
+
+template <typename t>
+void resizeField(const int width, const int height, vector<vector<t> >* field)
+{
+	field->resize(height);
+	for (auto& vec : *field)
+		vec.resize(width);
+}
+
+void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorField, 
+	const int iterations, const float epsilon, ScalarField* output)
+{
+	assert(initialGuess.size() == vectorField.size());
+	assert(initialGuess[0].size() == vectorField[0].size());
+
+	int width = initialGuess.size();
+	int height = initialGuess[0].size();
+
+	ScalarField tempField1;
+	ScalarField tempField2;
+	
+	// Copy over initial geuss
+	resizeField(width, height, output);
+	resizeField(width, height, &tempField1);
+	resizeField(width, height, &tempField2);
+
+	copyField(initialGuess, &tempField1);
+	copyField(initialGuess, &tempField2);
+
+	ScalarField* readField = &tempField1;
+	ScalarField* writeField = &tempField2;
+
+	for (int i = 0; i < iterations; ++i)
+	{
+		for (int y = 0; y < height; ++y)
+		{
+			// The left and right boundaries are left untouched
+			for (int x = 1; x < width - 1; ++x)
+			{
+				auto xm = max(x - 1, 0);
+				auto xmm = max(x - 2, 0);
+				auto xp = min(x + 1, width - 1);
+				auto xpp = min(x + 2, width - 1);
+				auto ym = max(y - 1, 0);
+				auto ymm = max(y - 2, 0);
+				auto yp = max(y + 1, height - 1);
+				auto ypp = max(y + 2, height - 1);
+				auto df = 0.5f * (-(*readField)[y][xpp] + (*readField)[y][xmm] - (*readField)[ypp][x] + (*readField)[ymm][x])
+					+ vectorField[y][xp].x - vectorField[y][xm].x + vectorField[yp][x].y - vectorField[ym][x].y;
+				(*writeField)[y][x] = (*writeField)[y][x] - epsilon * df;
+			}
+		}
+
+		// Swap the fields
+		auto temp = writeField;
+		writeField = readField;
+		readField = temp;
+	}
+
+	copyField(*readField, output);
 }
 
 int main(int argc, char** argv)
@@ -339,23 +533,40 @@ int main(int argc, char** argv)
 	}
 	case GradientStitch:
 	{
-		// Stitch the gradients together
-		VectorField gradient1;
-		VectorField gradient2;
-		computeGradient(imageArray1, &gradient1);
-		computeGradient(imageArray2, &gradient2);
+		// Stitch the images together
+		ScalarField image1Margin;
+		ScalarField image1Remainder;
+		ScalarField image2Margin;
+		ScalarField image2Remainder;
+		subRange(imageArray1, 0, 0, imageArray1[0].size() - stitchMargin, imageArray1.size(), &image1Remainder);
+		subRange(imageArray1, imageArray1[0].size() - stitchMargin, 0, stitchMargin, imageArray1.size(), &image1Margin);
+		subRange(imageArray2, 0, 0, stitchMargin, imageArray2.size(), &image2Margin);
+		subRange(imageArray2, stitchMargin, 0, imageArray2[0].size() - stitchMargin, imageArray2.size(), &image2Remainder);
 
-		VectorField gradientOutput;
-		cout << "Stitching gradients..." << endl;
-		// performGradientStitching(gradient1, gradient2, stitchMargin, &gradientOutput);
-		cout << "Stitching complete!" << endl;
+		// Stitch the gradients together
+		VectorField marginGradient1;
+		VectorField marginGradient2;
+		computeGradient(image1Margin, &marginGradient1);
+		computeGradient(image2Margin, &marginGradient2);
+
+		ScalarField mask;
+		cout << "Computing mask..." << endl;
+		performGradientStitching(marginGradient1, marginGradient2, &mask);
+		cout << "Mask computation complete!" << endl;
+
+		VectorField mergedGradient;
+		applyMask(marginGradient1, marginGradient2, mask, &mergedGradient);
+		ScalarField initialGeuss;
+		applyMask(image1Margin, image2Margin, mask, &initialGeuss);
+		ScalarField result;
+		gradientDescent(initialGeuss, mergedGradient, 10, 0.1f, &result);
 
 		// Save the result
 		cout << "Saving result..." << endl;
 		vector<unsigned char> outputData;
-		convertGradientToImageData(gradientOutput, &outputData);
-		error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(gradientOutput[0].size()),
-			static_cast<unsigned int>(gradientOutput.size()));
+		convertFloatMatrixToImageData(result, &outputData);
+		error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(mergedGradient[0].size()),
+			static_cast<unsigned int>(mergedGradient.size()));
 		break;
 	}
 	}
