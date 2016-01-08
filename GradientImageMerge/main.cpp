@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "imagewin32.h"
 #include "lodepng.h"
 #include "GridGraph_2D_4C.h"
 
@@ -13,8 +14,10 @@
 #define DEFAULT_IMAGE_SOURCE_2 "cat.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
 #define DEFAULT_STITCH_MARGIN 200
-#define DEFAULT_MODE PoissonStitch
+#define DEFAULT_MODE LaplaceStitch
 
+// It seems that setting the gradient epsilon > 0.5f causes a strange feedback effect
+// The same is true for laplace and > 0.25f
 #define GRADIENT_DESCENT_ITERATIONS 20
 #define GRADIENT_DESCENT_EPSILON 0.5f
 #define LAPLACIAN_DESCENT_ITERATIONS 40
@@ -213,7 +216,7 @@ template <typename t>
 void mergeRows(const vector<vector<vector<t> >* >& fields, vector<vector<t> >* output)
 {
 	auto fieldWidth = 0;
-	auto fieldHeight = (*fields[0])[0].size();
+	auto fieldHeight = (*fields[0]).size();
 	auto fieldCount = fields.size();
 
 	for (auto field : fields)
@@ -574,7 +577,8 @@ int main(int argc, char** argv)
 		return -1;
 	}
 
-	unsigned int error;
+	ScalarField output;
+	bool bSkipSave = false;
 
 	switch (mode)
 	{
@@ -599,13 +603,9 @@ int main(int argc, char** argv)
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &mergeResult, &image2Remainder };
-		ScalarField output;
 		mergeRows(mergeParams, &output);
 		cout << "Merging Complete!" << endl;
 
-		// Save the result
-		cout << "Saving result..." << endl;
-		error = saveFloatMatrixToPNG(outputPath, output);
 		break;
 	}
 	case ComputeGradient:
@@ -615,8 +615,10 @@ int main(int argc, char** argv)
 		computeGradient(imageArray1, &gradient);
 		vector<unsigned char> outputData;
 		convertGradientToImageData(gradient, &outputData);
-		error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(gradient[0].size()),
+		auto error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(gradient[0].size()),
 			static_cast<unsigned int>(gradient.size()));
+
+		bSkipSave = true;
 		break;
 	}
 	case RecoverFromGradient:
@@ -634,13 +636,9 @@ int main(int argc, char** argv)
 			for (int x = 0; x < width; ++x)
 				field[y][x] = 0.5f;
 
-		ScalarField result;
 		gradientDescent(field, gradient, RECOVERY_GRADIENT_ITERATIONS,
-			GRADIENT_DESCENT_EPSILON, false, false, &result);
+			GRADIENT_DESCENT_EPSILON, false, false, &output);
 
-		// Save the result
-		cout << "Saving result..." << endl;
-		error = saveFloatMatrixToPNG(outputPath, result);
 		break;
 	}
 	case RecoverFromLaplace:
@@ -657,13 +655,9 @@ int main(int argc, char** argv)
 			for (int x = 0; x < width; ++x)
 				field[y][x] = 0.5f;
 
-		ScalarField result;
 		laplacianDescent(field, laplacian, RECOVERY_LAPLACE_ITERATIONS,
-			LAPLACIAN_DESCENT_EPSILON, false, false, &result);
+			LAPLACIAN_DESCENT_EPSILON, false, false, &output);
 
-		// Save the result
-		cout << "Saving result..." << endl;
-		error = saveFloatMatrixToPNG(outputPath, result);
 		break;
 	}
 	case GradientStitch:
@@ -700,13 +694,8 @@ int main(int argc, char** argv)
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
-		ScalarField output;
 		mergeRows(mergeParams, &output);
 		cout << "Merging Complete!" << endl;
-
-		// Save the result
-		cout << "Saving result..." << endl;
-		error = saveFloatMatrixToPNG(outputPath, output);
 		break;
 	}
 	case LaplaceStitch:
@@ -749,13 +738,8 @@ int main(int argc, char** argv)
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
-		ScalarField output;
 		mergeRows(mergeParams, &output);
 		cout << "Merging Complete!" << endl;
-
-		// Save the result
-		cout << "Saving result..." << endl;
-		error = saveFloatMatrixToPNG(outputPath, output);
 		break;
 	}
 	case PoissonStitch:
@@ -796,21 +780,31 @@ int main(int argc, char** argv)
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
-		ScalarField output;
 		mergeRows(mergeParams, &output);
 		cout << "Merging Complete!" << endl;
-
-		// Save the result
-		cout << "Saving result..." << endl;
-		error = saveFloatMatrixToPNG(outputPath, output);
 		break;
 	}
 	}
 
-	if (error)
+	if (!bSkipSave)
 	{
-		cout << "Failed to save result!" << endl;
-		return -1;
+#ifdef _WIN32
+		cout << "Displaying result..." << endl;
+		vector<unsigned char> imageData;
+		convertFloatMatrixToImageData(output, &imageData);
+
+		displayImage(output[0].size(), output.size(), imageData.data());
+#else
+		// Save the result
+		cout << "Saving result..." << endl;
+		auto error = saveFloatMatrixToPNG(outputPath, output);
+
+		if (error)
+		{
+			cout << "Failed to save result!" << endl;
+			return -1;
+		}
+#endif
 	}
 
 	cout << "Success!" << endl;

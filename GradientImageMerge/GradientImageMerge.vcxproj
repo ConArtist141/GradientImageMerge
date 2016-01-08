@@ -75,6 +75,9 @@
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>opengl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -111,9 +114,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="GridGraph_2D_4C.h" />
+    <ClInclude Include="imagewin32.h" />
     <ClInclude Include="lodepng.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="imagewin32.cpp" />
     <ClCompile Include="lodepng.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>
