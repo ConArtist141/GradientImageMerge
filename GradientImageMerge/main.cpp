@@ -13,7 +13,14 @@
 #define DEFAULT_IMAGE_SOURCE_2 "cat.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
 #define DEFAULT_STITCH_MARGIN 200
-#define DEFAULT_MODE GradientStitch
+#define DEFAULT_MODE PoissonStitch
+
+#define GRADIENT_DESCENT_ITERATIONS 20
+#define GRADIENT_DESCENT_EPSILON 0.5f
+#define LAPLACIAN_DESCENT_ITERATIONS 40
+#define LAPLACIAN_DESCENT_EPSILON 0.25f
+#define RECOVERY_GRADIENT_ITERATIONS 20
+#define RECOVERY_LAPLACE_ITERATIONS 20
 
 using namespace std;
 
@@ -22,7 +29,11 @@ enum ProgramMode
 {
 	SimpleStitch,
 	ComputeGradient,
-	GradientStitch
+	RecoverFromGradient,
+	RecoverFromLaplace,
+	GradientStitch,
+	LaplaceStitch,
+	PoissonStitch,
 };
 
 // 2-component vector
@@ -66,19 +77,32 @@ typedef vector<vector<float> > ScalarField;
 typedef vector<vector<vec2<float> > > VectorField;
 typedef GridGraph_2D_4C<float, float, float> Grid;
 
-void performStitching(ScalarField field1, ScalarField field2, ScalarField* mergeResult)
+template <typename t>
+void copyField(const vector<vector<t> >& src, vector<vector<t> >* dest)
+{
+	int width = src[0].size();
+	for (int y = 0, height = src.size(); y < height; ++y)
+		memcpy((*dest)[y].data(), src[y].data(), sizeof(t) * width);
+}
+
+template <typename t>
+void resizeField(const int width, const int height, vector<vector<t> >* field)
+{
+	field->resize(height);
+	for (auto& vec : *field)
+		vec.resize(width);
+}
+
+void computeStitchMask(ScalarField field1, ScalarField field2, ScalarField* maskResult)
 {
 	assert(field1.size() == field2.size());
 	assert(field1[0].size() == field2[0].size());
 
 	auto gridWidth = field1[0].size();
 	auto gridHeight = field1.size();
+	auto bigNumber = 1000.0f * gridWidth * gridHeight;
 
-	mergeResult->resize(gridHeight);
-	for (auto& row : *mergeResult)
-		row.resize(gridWidth);
-
-	float bigNumber = 1000.0f * gridWidth * gridHeight;
+	resizeField(gridWidth, gridHeight, maskResult);
 
 	Grid grid(gridWidth, gridHeight);
 
@@ -119,14 +143,14 @@ void performStitching(ScalarField field1, ScalarField field2, ScalarField* merge
 		{
 			auto segment = grid.get_segment(grid.node_id(x, y));
 			if (segment == 0)
-				(*mergeResult)[y][x] = field1[y][x];
+				(*maskResult)[y][x] = 1.0f;
 			else
-				(*mergeResult)[y][x] = field2[y][x];
+				(*maskResult)[y][x] = 0.0f;
 		}
 	}
 }
 
-void performGradientStitching(VectorField field1, VectorField field2, ScalarField* maskResult)
+void computeGradientStitchMask(VectorField field1, VectorField field2, ScalarField* maskResult)
 {
 	assert(field1.size() == field2.size());
 	assert(field1[0].size() == field2[0].size());
@@ -386,24 +410,10 @@ unsigned int saveFloatMatrixToPNG(const string& filename, const ScalarField& dat
 		static_cast<unsigned int>(data.size()));
 }
 
-template <typename t>
-void copyField(const vector<vector<t> >& src, vector<vector<t> >* dest)
-{
-	int width = src[0].size();
-	for (int y = 0, height = src.size(); y < height; ++y)
-		memcpy((*dest)[y].data(), src[y].data(), sizeof(t) * width);
-}
-
-template <typename t>
-void resizeField(const int width, const int height, vector<vector<t> >* field)
-{
-	field->resize(height);
-	for (auto& vec : *field)
-		vec.resize(width);
-}
-
+// Solve using standard gradient descent
 void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorField, 
-	const int iterations, const float epsilon, ScalarField* output)
+	const int iterations, const float epsilon, const bool bVerticalBoundaryConstraints,
+	const bool bHorizontalBoundaryConstraints, ScalarField* output)
 {
 	assert(initialGuess.size() == vectorField.size());
 	assert(initialGuess[0].size() == vectorField[0].size());
@@ -425,14 +435,19 @@ void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorF
 	ScalarField* readField = &tempField1;
 	ScalarField* writeField = &tempField2;
 
+	int yStart = (bHorizontalBoundaryConstraints ? 1 : 0);
+	int yEnd = (bHorizontalBoundaryConstraints ? height - 1 : height);
+	int xStart = (bVerticalBoundaryConstraints ? 1 : 0);
+	int xEnd = (bVerticalBoundaryConstraints ? width - 1 : width);
+
 	for (int i = 0; i < iterations; ++i)
 	{
 		cout << "Descent iteration " << i + 1 << "..." << endl;
 
-		for (int y = 0; y < height; ++y)
+		for (int y = yStart; y < yEnd; ++y)
 		{
 			// The left and right boundaries are left untouched
-			for (int x = 1; x < width - 1; ++x)
+			for (int x = xStart; x < xEnd; ++x)
 			{
 				auto xm = max(x - 1, 0);
 				auto xmm = max(x - 2, 0);
@@ -457,24 +472,76 @@ void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorF
 	copyField(*readField, output);
 }
 
-void test()
+// Solve using laplacian descent
+void laplacianDescent(const ScalarField& initialGuess, const ScalarField& laplacian,
+	const int iterations, const float epsilon, const bool bVerticalBoundaryConstraints,
+	const bool bHorizontalBoundaryConstraints, ScalarField* output)
 {
-	ScalarField field;
-	VectorField vecField;
-	resizeField(32, 32, &field);
-	for (int x = 0; x < 32; ++x)
-		for (int y = 0; y < 32; ++y)
-			field[y][x] = (y + x) / 64.0f;
+	assert(initialGuess.size() == laplacian.size());
+	assert(initialGuess[0].size() == laplacian[0].size());
 
-	computeGradient(field, &vecField);
-	gradientDescent(field, vecField, 10, 1.0f, &field);
+	int width = initialGuess[0].size();
+	int height = initialGuess.size();
+
+	ScalarField tempField1;
+	ScalarField tempField2;
+
+	// Copy over initial geuss
+	resizeField(width, height, output);
+	resizeField(width, height, &tempField1);
+	resizeField(width, height, &tempField2);
+
+	copyField(initialGuess, &tempField1);
+	copyField(initialGuess, &tempField2);
+
+	ScalarField* readField = &tempField1;
+	ScalarField* writeField = &tempField2;
+
+	int yStart = (bHorizontalBoundaryConstraints ? 1 : 0);
+	int yEnd = (bHorizontalBoundaryConstraints ? height - 1 : height);
+	int xStart = (bVerticalBoundaryConstraints ? 1 : 0);
+	int xEnd = (bVerticalBoundaryConstraints ? width - 1 : width);
+
+	for (int i = 0; i < iterations; ++i)
+	{
+		cout << "Descent iteration " << i + 1 << "..." << endl;
+
+		for (int y = yStart; y < yEnd; ++y)
+		{
+			// The left and right boundaries are left untouched
+			for (int x = xStart; x < xEnd; ++x)
+			{
+				auto xm = max(x - 1, 0);
+				auto xp = min(x + 1, width - 1);
+				auto ym = max(y - 1, 0);
+				auto yp = min(y + 1, height - 1);
+				auto df = laplacian[y][x] - ((*readField)[y][xp] + (*readField)[y][xm] + (*readField)[yp][x] + (*readField)[ym][x]
+					- 4.0f * (*readField)[y][x]);
+				(*writeField)[y][x] = fmax(fmin((*readField)[y][x] - epsilon * df, 1.0f), 0.0f);
+			}
+		}
+
+		// Swap the fields
+		auto temp = writeField;
+		writeField = readField;
+		readField = temp;
+	}
+
+	copyField(*readField, output);
+}
+
+// Solve using poisson equation
+void PoissonSolver(const ScalarField& margin, const ScalarField& boundary, ScalarField* output)
+{
+	assert(margin.size() == boundary.size());
+	assert(margin[0].size() == boundary[0].size());
+
+	resizeField(margin[0].size(), margin.size(), output);
+	// TODO: ALEX MERGE THIS STUFF!
 }
 
 int main(int argc, char** argv)
 {
-	// test();
-	// return 0;
-
 	// Read command line inputs if specified
 	string imageSource1 = DEFAULT_IMAGE_SOURCE_1;
 	string imageSource2 = DEFAULT_IMAGE_SOURCE_2;
@@ -508,6 +575,7 @@ int main(int argc, char** argv)
 	}
 
 	unsigned int error;
+
 	switch (mode)
 	{
 	case SimpleStitch:
@@ -523,8 +591,10 @@ int main(int argc, char** argv)
 		subRange(imageArray2, stitchMargin, 0, imageArray2[0].size() - stitchMargin, imageArray2.size(), &image2Remainder);
 
 		cout << "Stitching images..." << endl;
+		ScalarField maskResult;
+		computeStitchMask(image1Margin, image2Margin, &maskResult);
 		ScalarField mergeResult;
-		performStitching(image1Margin, image2Margin, &mergeResult);
+		applyMask(image1Margin, image2Margin, maskResult, &mergeResult);
 		cout << "Stitching complete!" << endl;
 
 		cout << "Merging..." << endl;
@@ -549,6 +619,53 @@ int main(int argc, char** argv)
 			static_cast<unsigned int>(gradient.size()));
 		break;
 	}
+	case RecoverFromGradient:
+	{
+		// Atempt to recover an image from gradient information
+		VectorField gradient;
+		computeGradient(imageArray1, &gradient);
+
+		int width = imageArray1[0].size();
+		int height = imageArray1.size();
+		ScalarField field;
+		resizeField(width, height, &field);
+
+		for (int y = 0; y < height; ++y)
+			for (int x = 0; x < width; ++x)
+				field[y][x] = 0.5f;
+
+		ScalarField result;
+		gradientDescent(field, gradient, RECOVERY_GRADIENT_ITERATIONS,
+			GRADIENT_DESCENT_EPSILON, false, false, &result);
+
+		// Save the result
+		cout << "Saving result..." << endl;
+		error = saveFloatMatrixToPNG(outputPath, result);
+		break;
+	}
+	case RecoverFromLaplace:
+	{
+		ScalarField laplacian;
+		computeLaplacian(imageArray1, &laplacian);
+
+		int width = imageArray1[0].size();
+		int height = imageArray1.size();
+		ScalarField field;
+		resizeField(width, height, &field);
+
+		for (int y = 0; y < height; ++y)
+			for (int x = 0; x < width; ++x)
+				field[y][x] = 0.5f;
+
+		ScalarField result;
+		laplacianDescent(field, laplacian, RECOVERY_LAPLACE_ITERATIONS,
+			LAPLACIAN_DESCENT_EPSILON, false, false, &result);
+
+		// Save the result
+		cout << "Saving result..." << endl;
+		error = saveFloatMatrixToPNG(outputPath, result);
+		break;
+	}
 	case GradientStitch:
 	{
 		// Stitch the images together
@@ -569,15 +686,17 @@ int main(int argc, char** argv)
 
 		ScalarField mask;
 		cout << "Computing mask..." << endl;
-		performGradientStitching(marginGradient1, marginGradient2, &mask);
+		computeGradientStitchMask(marginGradient1, marginGradient2, &mask);
 		cout << "Mask computation complete!" << endl;
 
+		// Perform gradient descent
 		VectorField mergedGradient;
 		applyMask(marginGradient1, marginGradient2, mask, &mergedGradient);
 		ScalarField initialGuess;
 		applyMask(image1Margin, image2Margin, mask, &initialGuess);
 		ScalarField result;
-		gradientDescent(initialGuess, mergedGradient, 20, 0.5f, &result);
+		gradientDescent(initialGuess, mergedGradient, GRADIENT_DESCENT_ITERATIONS, 
+			GRADIENT_DESCENT_EPSILON, true, false, &result);
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
@@ -587,10 +706,103 @@ int main(int argc, char** argv)
 
 		// Save the result
 		cout << "Saving result..." << endl;
-		vector<unsigned char> outputData;
-		convertFloatMatrixToImageData(output, &outputData);
-		error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(output[0].size()),
-			static_cast<unsigned int>(output.size()));
+		error = saveFloatMatrixToPNG(outputPath, output);
+		break;
+	}
+	case LaplaceStitch:
+	{
+		// Stitch the images together
+		ScalarField image1Margin;
+		ScalarField image1Remainder;
+		ScalarField image2Margin;
+		ScalarField image2Remainder;
+		subRange(imageArray1, 0, 0, imageArray1[0].size() - stitchMargin, imageArray1.size(), &image1Remainder);
+		subRange(imageArray1, imageArray1[0].size() - stitchMargin, 0, stitchMargin, imageArray1.size(), &image1Margin);
+		subRange(imageArray2, 0, 0, stitchMargin, imageArray2.size(), &image2Margin);
+		subRange(imageArray2, stitchMargin, 0, imageArray2[0].size() - stitchMargin, imageArray2.size(), &image2Remainder);
+
+		// Stitch the gradients together
+		VectorField marginGradient1;
+		VectorField marginGradient2;
+		computeGradient(image1Margin, &marginGradient1);
+		computeGradient(image2Margin, &marginGradient2);
+
+		ScalarField mask;
+		cout << "Computing mask..." << endl;
+		computeGradientStitchMask(marginGradient1, marginGradient2, &mask);
+		cout << "Mask computation complete!" << endl;
+
+		cout << "Computing laplacian..." << endl;
+		ScalarField marginLaplacian1;
+		ScalarField marginLaplacian2;
+		computeLaplacian(image1Margin, &marginLaplacian1);
+		computeLaplacian(image2Margin, &marginLaplacian2);
+		ScalarField laplacian;
+		ScalarField initialGuess;
+		applyMask(marginLaplacian1, marginLaplacian2, mask, &laplacian);
+		applyMask(image1Margin, image2Margin, mask, &initialGuess);
+
+		// Perform laplacian descent
+		ScalarField result;
+		laplacianDescent(initialGuess, laplacian, LAPLACIAN_DESCENT_ITERATIONS,
+			LAPLACIAN_DESCENT_EPSILON, true, false, &result);
+
+		cout << "Merging..." << endl;
+		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
+		ScalarField output;
+		mergeRows(mergeParams, &output);
+		cout << "Merging Complete!" << endl;
+
+		// Save the result
+		cout << "Saving result..." << endl;
+		error = saveFloatMatrixToPNG(outputPath, output);
+		break;
+	}
+	case PoissonStitch:
+	{
+		// Stitch the images together
+		ScalarField image1Margin;
+		ScalarField image1Remainder;
+		ScalarField image2Margin;
+		ScalarField image2Remainder;
+		subRange(imageArray1, 0, 0, imageArray1[0].size() - stitchMargin, imageArray1.size(), &image1Remainder);
+		subRange(imageArray1, imageArray1[0].size() - stitchMargin, 0, stitchMargin, imageArray1.size(), &image1Margin);
+		subRange(imageArray2, 0, 0, stitchMargin, imageArray2.size(), &image2Margin);
+		subRange(imageArray2, stitchMargin, 0, imageArray2[0].size() - stitchMargin, imageArray2.size(), &image2Remainder);
+
+		// Stitch the gradients together
+		VectorField marginGradient1;
+		VectorField marginGradient2;
+		computeGradient(image1Margin, &marginGradient1);
+		computeGradient(image2Margin, &marginGradient2);
+
+		ScalarField mask;
+		cout << "Computing mask..." << endl;
+		computeGradientStitchMask(marginGradient1, marginGradient2, &mask);
+		cout << "Mask computation complete!" << endl;
+
+		cout << "Computing laplacian..." << endl;
+		ScalarField marginLaplacian1;
+		ScalarField marginLaplacian2;
+		computeLaplacian(image1Margin, &marginLaplacian1);
+		computeLaplacian(image2Margin, &marginLaplacian2);
+		ScalarField laplacian;
+		ScalarField boundary;
+		applyMask(marginLaplacian1, marginLaplacian2, mask, &laplacian);
+		applyMask(image1Margin, image2Margin, mask, &boundary);
+
+		ScalarField result;
+		PoissonSolver(laplacian, boundary, &result);
+
+		cout << "Merging..." << endl;
+		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
+		ScalarField output;
+		mergeRows(mergeParams, &output);
+		cout << "Merging Complete!" << endl;
+
+		// Save the result
+		cout << "Saving result..." << endl;
+		error = saveFloatMatrixToPNG(outputPath, output);
 		break;
 	}
 	}
