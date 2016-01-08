@@ -22,8 +22,8 @@
 #define GRADIENT_DESCENT_EPSILON 0.5f
 #define LAPLACIAN_DESCENT_ITERATIONS 40
 #define LAPLACIAN_DESCENT_EPSILON 0.25f
-#define RECOVERY_GRADIENT_ITERATIONS 20
-#define RECOVERY_LAPLACE_ITERATIONS 20
+#define RECOVERY_GRADIENT_ITERATIONS 40
+#define RECOVERY_LAPLACE_ITERATIONS 80
 
 using namespace std;
 
@@ -31,12 +31,12 @@ using namespace std;
 enum ProgramMode
 {
 	SimpleStitch,
-	ComputeGradient,
 	RecoverFromGradient,
 	RecoverFromLaplace,
 	GradientStitch,
 	LaplaceStitch,
 	PoissonStitch,
+	ComputeGradient,
 };
 
 // 2-component vector
@@ -553,17 +553,17 @@ int main(int argc, char** argv)
 	ProgramMode mode = DEFAULT_MODE;
 
 	// Read input parameters if needed
-	if (argc >= 2)
-	{
-		imageSource1 = argv[0];
-		imageSource2 = argv[1];
-	}
 	if (argc >= 3)
-		stitchMargin = stoi(argv[2]);
+	{
+		imageSource1 = argv[1];
+		imageSource2 = argv[2];
+	}
 	if (argc >= 4)
-		outputPath = argv[3];
+		stitchMargin = stoi(argv[3]);
 	if (argc >= 5)
 		mode = static_cast<ProgramMode>(stoi(argv[4]));
+	if (argc >= 6)
+		outputPath = argv[4];
 
 	// Open the PNG files for image 1 and image 2
 	ScalarField imageArray1;
@@ -575,6 +575,17 @@ int main(int argc, char** argv)
 	{
 		cout << "Failed to open image files!" << endl;
 		return -1;
+	}
+
+	// Resize images if necessary
+	if (imageArray1.size() != imageArray2.size())
+	{
+		cout << "Unequal image height... resizing..." << endl;
+		auto minsize = min(imageArray1.size(), imageArray2.size());
+		if (imageArray1.size() != minsize)
+			imageArray1.resize(minsize);
+		else
+			imageArray2.resize(minsize);
 	}
 
 	ScalarField output;
