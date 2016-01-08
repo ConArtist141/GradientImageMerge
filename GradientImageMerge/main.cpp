@@ -6,15 +6,20 @@
 #include <algorithm>
 #include <cmath>
 
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
+#include "Eigen/LU"
 #include "imagewin32.h"
 #include "lodepng.h"
 #include "GridGraph_2D_4C.h"
 
-#define DEFAULT_IMAGE_SOURCE_1 "goat.png"
-#define DEFAULT_IMAGE_SOURCE_2 "cat.png"
+#define DEFAULT_IMAGE_SOURCE_1 "goat2.png"
+#define DEFAULT_IMAGE_SOURCE_2 "cat2.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
-#define DEFAULT_STITCH_MARGIN 200
-#define DEFAULT_MODE LaplaceStitch
+#define DEFAULT_STITCH_MARGIN 50
+#define DEFAULT_MODE PoissonStitch
 
 // It seems that setting the gradient epsilon > 0.5f causes a strange feedback effect
 // The same is true for laplace and > 0.25f
@@ -37,6 +42,15 @@ enum ProgramMode
 	LaplaceStitch,
 	PoissonStitch,
 	ComputeGradient,
+};
+
+struct pairhash {
+public:
+	template <typename T, typename U>
+	std::size_t operator()(const std::pair<T, U> &x) const
+	{
+		return std::hash<T>()(x.first) ^ std::hash<U>()(x.second);
+	}
 };
 
 // 2-component vector
@@ -538,9 +552,77 @@ void PoissonSolver(const ScalarField& margin, const ScalarField& boundary, Scala
 {
 	assert(margin.size() == boundary.size());
 	assert(margin[0].size() == boundary[0].size());
-
 	resizeField(margin[0].size(), margin.size(), output);
-	// TODO: ALEX MERGE THIS STUFF!
+
+	auto gridWidth = margin[0].size();
+	auto gridHeight = margin.size();
+	auto N = gridWidth * gridHeight;
+	cout << gridWidth << endl;
+	cout << gridHeight << endl;
+	cout << N << endl;
+	Eigen::MatrixXf A(N, N);
+	Eigen::VectorXf b(N);
+	Eigen::VectorXf z;
+	unordered_map<int, pair<int, int>> index_to_gridindex;
+	unordered_map<pair<int, int>, int, pairhash> gridindex_to_index;
+	vector<bool> index_is_boundary;
+
+	for (size_t i = 0; i < N; ++i)
+	{
+		pair<int, int> gridindex;
+		gridindex.first = i / gridWidth;
+		gridindex.second = i % gridWidth;
+		bool is_boundary = false;
+		bool on_y_boundary = (gridindex.first == 0) || (gridindex.first == gridHeight - 1);
+		bool on_x_boundary = (gridindex.second == 0) || (gridindex.second == gridWidth - 1);
+		if (on_y_boundary || on_x_boundary)
+		{
+			is_boundary = true;
+		}
+		index_to_gridindex[i] = gridindex;
+		gridindex_to_index[gridindex] = i;
+		index_is_boundary.push_back(is_boundary);
+	}
+
+	for (size_t x = 0; x < N; ++x)
+	{
+		pair<int, int> gridindex = index_to_gridindex[x];
+		for (size_t y = 0; y < N; ++y)
+			A(x, y) = 0;
+
+		if (index_is_boundary[x])
+		{
+			A(x, x) = 1;
+			b(x) = boundary[gridindex.first][gridindex.second];
+			continue;
+		}
+
+		b(x) = margin[gridindex.first][gridindex.second];
+		unordered_set<int> active_variables;
+
+		pair<int, int> gridindex_down(gridindex.first + 1, gridindex.second);
+		pair<int, int> gridindex_up(gridindex.first - 1, gridindex.second);
+		pair<int, int> gridindex_left(gridindex.first, gridindex.second - 1);
+		pair<int, int> gridindex_right(gridindex.first, gridindex.second + 1);
+
+		active_variables.insert(gridindex_to_index[gridindex_right]);
+		active_variables.insert(gridindex_to_index[gridindex_left]);
+		active_variables.insert(gridindex_to_index[gridindex_up]);
+		active_variables.insert(gridindex_to_index[gridindex_down]);
+
+		A(x, x) = -4;
+		for (const auto& var : active_variables)
+		{
+			A(x, var) = 1;
+		}
+	}
+	z = A.lu().solve(b);
+
+	for (size_t i = 0; i < N; ++i)
+	{
+		pair<int, int> gridindex = index_to_gridindex[i];
+		(*output)[gridindex.first][gridindex.second] = min(max(z(i), 0.0f), 1.0f);
+	}
 }
 
 int main(int argc, char** argv)
@@ -773,6 +855,7 @@ int main(int argc, char** argv)
 		applyMask(marginLaplacian1, marginLaplacian2, mask, &laplacian);
 		applyMask(image1Margin, image2Margin, mask, &boundary);
 
+		cout << "Running Poisson solver..." << endl;
 		ScalarField result;
 		PoissonSolver(laplacian, boundary, &result);
 
