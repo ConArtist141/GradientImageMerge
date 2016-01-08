@@ -619,19 +619,6 @@ int main(int argc, char** argv)
 
 		break;
 	}
-	case ComputeGradient:
-	{
-		// Compute the gradient of an image and save the result
-		VectorField gradient;
-		computeGradient(imageArray1, &gradient);
-		vector<unsigned char> outputData;
-		convertGradientToImageData(gradient, &outputData);
-		auto error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(gradient[0].size()),
-			static_cast<unsigned int>(gradient.size()));
-
-		bSkipSave = true;
-		break;
-	}
 	case RecoverFromGradient:
 	{
 		// Atempt to recover an image from gradient information
@@ -795,6 +782,22 @@ int main(int argc, char** argv)
 		cout << "Merging Complete!" << endl;
 		break;
 	}
+	case ComputeGradient:
+	{
+		// Compute the gradient of an image and save the result
+		VectorField gradient;
+		computeGradient(imageArray1, &gradient);
+		vector<unsigned char> outputData;
+		convertGradientToImageData(gradient, &outputData);
+		auto error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(gradient[0].size()),
+			static_cast<unsigned int>(gradient.size()));
+
+		bSkipSave = true;
+		break;
+	}
+	default:
+		cout << "Unrecognized command!" << endl;
+		return 0;
 	}
 
 	if (!bSkipSave)
