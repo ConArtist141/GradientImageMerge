@@ -9,10 +9,10 @@
 #include "lodepng.h"
 #include "GridGraph_2D_4C.h"
 
-#define DEFAULT_IMAGE_SOURCE_1 "cat.png"
+#define DEFAULT_IMAGE_SOURCE_1 "goat.png"
 #define DEFAULT_IMAGE_SOURCE_2 "cat.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
-#define DEFAULT_STITCH_MARGIN 100
+#define DEFAULT_STITCH_MARGIN 200
 #define DEFAULT_MODE GradientStitch
 
 using namespace std;
@@ -408,8 +408,8 @@ void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorF
 	assert(initialGuess.size() == vectorField.size());
 	assert(initialGuess[0].size() == vectorField[0].size());
 
-	int width = initialGuess.size();
-	int height = initialGuess[0].size();
+	int width = initialGuess[0].size();
+	int height = initialGuess.size();
 
 	ScalarField tempField1;
 	ScalarField tempField2;
@@ -427,6 +427,8 @@ void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorF
 
 	for (int i = 0; i < iterations; ++i)
 	{
+		cout << "Descent iteration " << i + 1 << "..." << endl;
+
 		for (int y = 0; y < height; ++y)
 		{
 			// The left and right boundaries are left untouched
@@ -438,11 +440,11 @@ void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorF
 				auto xpp = min(x + 2, width - 1);
 				auto ym = max(y - 1, 0);
 				auto ymm = max(y - 2, 0);
-				auto yp = max(y + 1, height - 1);
-				auto ypp = max(y + 2, height - 1);
-				auto df = 0.5f * (-(*readField)[y][xpp] + (*readField)[y][xmm] - (*readField)[ypp][x] + (*readField)[ymm][x])
+				auto yp = min(y + 1, height - 1);
+				auto ypp = min(y + 2, height - 1);
+				auto df = 0.5f * (4.0f * (*readField)[y][x] - (*readField)[y][xpp] - (*readField)[y][xmm] - (*readField)[ypp][x] - (*readField)[ymm][x])
 					+ vectorField[y][xp].x - vectorField[y][xm].x + vectorField[yp][x].y - vectorField[ym][x].y;
-				(*writeField)[y][x] = (*writeField)[y][x] - epsilon * df;
+				(*writeField)[y][x] = fmax(fmin((*readField)[y][x] - epsilon * df, 1.0f), 0.0f);
 			}
 		}
 
@@ -455,8 +457,24 @@ void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorF
 	copyField(*readField, output);
 }
 
+void test()
+{
+	ScalarField field;
+	VectorField vecField;
+	resizeField(32, 32, &field);
+	for (int x = 0; x < 32; ++x)
+		for (int y = 0; y < 32; ++y)
+			field[y][x] = (y + x) / 64.0f;
+
+	computeGradient(field, &vecField);
+	gradientDescent(field, vecField, 10, 1.0f, &field);
+}
+
 int main(int argc, char** argv)
 {
+	// test();
+	// return 0;
+
 	// Read command line inputs if specified
 	string imageSource1 = DEFAULT_IMAGE_SOURCE_1;
 	string imageSource2 = DEFAULT_IMAGE_SOURCE_2;
@@ -556,17 +574,23 @@ int main(int argc, char** argv)
 
 		VectorField mergedGradient;
 		applyMask(marginGradient1, marginGradient2, mask, &mergedGradient);
-		ScalarField initialGeuss;
-		applyMask(image1Margin, image2Margin, mask, &initialGeuss);
+		ScalarField initialGuess;
+		applyMask(image1Margin, image2Margin, mask, &initialGuess);
 		ScalarField result;
-		gradientDescent(initialGeuss, mergedGradient, 10, 0.1f, &result);
+		gradientDescent(initialGuess, mergedGradient, 20, 0.5f, &result);
+
+		cout << "Merging..." << endl;
+		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
+		ScalarField output;
+		mergeRows(mergeParams, &output);
+		cout << "Merging Complete!" << endl;
 
 		// Save the result
 		cout << "Saving result..." << endl;
 		vector<unsigned char> outputData;
-		convertFloatMatrixToImageData(result, &outputData);
-		error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(mergedGradient[0].size()),
-			static_cast<unsigned int>(mergedGradient.size()));
+		convertFloatMatrixToImageData(output, &outputData);
+		error = lodepng::encode(outputPath, outputData, static_cast<unsigned int>(output[0].size()),
+			static_cast<unsigned int>(output.size()));
 		break;
 	}
 	}
