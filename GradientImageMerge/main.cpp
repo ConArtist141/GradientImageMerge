@@ -21,10 +21,10 @@
 #include "lodepng.h"
 #include "GridGraph_2D_4C.h"
 
-#define DEFAULT_IMAGE_SOURCE_1 "goat.png"
-#define DEFAULT_IMAGE_SOURCE_2 "cat.png"
+#define DEFAULT_IMAGE_SOURCE_1 "mountains2.png"
+#define DEFAULT_IMAGE_SOURCE_2 "mountains3.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
-#define DEFAULT_STITCH_MARGIN 100
+#define DEFAULT_STITCH_MARGIN 200
 #define DEFAULT_MODE PoissonStitchSparse
 
 // It seems that setting the gradient epsilon > 0.5f causes a strange feedback effect
@@ -754,6 +754,13 @@ int main(int argc, char** argv)
 			imageArray1.resize(minsize);
 		else
 			imageArray2.resize(minsize);
+	}
+
+	// Check margin
+	if (stitchMargin < 1)
+	{
+		cout << "Invalid margin size!" << endl;
+		return;
 	}
 
 	ScalarField output;
