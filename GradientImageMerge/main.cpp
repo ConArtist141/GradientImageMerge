@@ -719,6 +719,7 @@ int main(int argc, char** argv)
 	string outputPath = DEFAULT_IMAGE_OUTPUT;
 	int stitchMargin = DEFAULT_STITCH_MARGIN;
 	ProgramMode mode = DEFAULT_MODE;
+	bool bUseFileOutput = false;
 
 	// Read input parameters if needed
 	if (argc >= 3)
@@ -731,7 +732,11 @@ int main(int argc, char** argv)
 	if (argc >= 5)
 		mode = static_cast<ProgramMode>(stoi(argv[4]));
 	if (argc >= 6)
-		outputPath = argv[4];
+	{
+		cout << "File output specified!" << endl;
+		outputPath = argv[5];
+		bUseFileOutput = true;
+	}
 
 	// Open the PNG files for image 1 and image 2
 	ScalarField imageArray1;
@@ -742,7 +747,7 @@ int main(int argc, char** argv)
 	if (error1 || error2)
 	{
 		cout << "Failed to open image files!" << endl;
-		return -1;
+		return EXIT_FAILURE;
 	}
 
 	// Resize images if necessary
@@ -760,7 +765,7 @@ int main(int argc, char** argv)
 	if (stitchMargin < 1)
 	{
 		cout << "Invalid margin size!" << endl;
-		return;
+		return EXIT_FAILURE;
 	}
 
 	ScalarField output;
@@ -980,30 +985,42 @@ int main(int argc, char** argv)
 	}
 	default:
 		cout << "Unrecognized command!" << endl;
-		return 0;
+		return EXIT_SUCCESS;
 	}
 
 	if (!bSkipSave)
 	{
-#ifdef _WIN32
-		cout << "Displaying result..." << endl;
-		vector<unsigned char> imageData;
-		convertFloatMatrixToImageData(output, &imageData);
-
-		displayImage(output[0].size(), output.size(), imageData.data());
-#else
-		// Save the result
-		cout << "Saving result..." << endl;
-		auto error = saveFloatMatrixToPNG(outputPath, output);
-
-		if (error)
+		// Display mode
+		if (!bUseFileOutput)
 		{
-			cout << "Failed to save result!" << endl;
-			return -1;
-		}
+#ifdef _WIN32
+			// Display the output in an opengl window (windows-only)
+			cout << "Displaying result..." << endl;
+			vector<unsigned char> imageData;
+			convertFloatMatrixToImageData(output, &imageData);
+
+			displayImage(output[0].size(), output.size(), imageData.data());
+#else
+			// No display mode on non-windows platforms
+			bUseFileOutput = true;
 #endif
+		}
+		
+		// File output mode
+		if (bUseFileOutput)
+		{
+			// Save the result
+			cout << "Saving result..." << endl;
+			auto error = saveFloatMatrixToPNG(outputPath, output);
+
+			if (error)
+			{
+				cout << "Failed to save result!" << endl;
+				return EXIT_FAILURE;
+			}
+		}
 	}
 
 	cout << "Success!" << endl;
-	return 0;
+	return EXIT_SUCCESS;
 }
