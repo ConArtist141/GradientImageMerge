@@ -35,6 +35,7 @@
 #define LAPLACIAN_DESCENT_EPSILON 0.25f
 #define RECOVERY_GRADIENT_ITERATIONS 40
 #define RECOVERY_LAPLACE_ITERATIONS 80
+#define POISSON_USE_TOP_BOUNDARY_CONDITIONS false
 
 using namespace std;
 
@@ -651,7 +652,7 @@ void insertCoefficient(int id, int x, int y, double w, const int width, const in
 		coeffs->push_back(DTriplet(id, targetVariableId, w)); // unknown coefficient
 }
 
-void buildProblem(std::vector<DTriplet>* coefficients, Eigen::VectorXd* b, const ScalarField& laplacian,
+void buildPoissonProblem(std::vector<DTriplet>* coefficients, Eigen::VectorXd* b, const ScalarField& laplacian,
 	const ScalarField& boundary)
 {
 	b->setZero();
@@ -675,14 +676,82 @@ void buildProblem(std::vector<DTriplet>* coefficients, Eigen::VectorXd* b, const
 	}
 }
 
-void poissonSolverSparse(const ScalarField& margin, const ScalarField& boundary, ScalarField* output)
+typedef Eigen::Triplet<double> DTriplet;
+void insertCoefficientNoHorizontalBoundary(int id, int x, int y, double w, const int width, const int height, std::vector<DTriplet>* coeffs,
+	Eigen::VectorXd* b, const ScalarField& boundary)
+{
+	int targetVariableId = x + y * width;
+	if (x == -1)
+		(*b)(id) -= w * boundary[y][0]; // constrained coefficient
+	else if (x == width)
+		(*b)(id) -= w * boundary[y][width + 1]; // constrained coefficient
+	else
+		coeffs->push_back(DTriplet(id, targetVariableId, w)); // unknown coefficient
+}
+
+void buildPoissonProblemNoHorizontalBoundary(std::vector<DTriplet>* coefficients, Eigen::VectorXd* b, const ScalarField& laplacian,
+	const ScalarField& boundary)
+{
+	b->setZero();
+	const int width = laplacian[0].size() - 2;
+	const int height = laplacian.size();
+
+	int id = 0;
+	for (int y = 0; y < height; ++y)
+	{
+		if (y == 0)
+		{
+			for (int x = 0; x < width; ++x, ++id)
+			{
+				(*b)(id) += laplacian[y][x + 1];
+
+				// Discrete laplacian star
+				insertCoefficientNoHorizontalBoundary(id, x - 1, y, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x + 1, y, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x, y + 1, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x, y, -3, width, height, coefficients, b, boundary);
+			}
+		}
+		else if (y == height - 1)
+		{
+			for (int x = 0; x < width; ++x, ++id)
+			{
+				(*b)(id) += laplacian[y][x + 1];
+
+				// Discrete laplacian star
+				insertCoefficientNoHorizontalBoundary(id, x - 1, y, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x + 1, y, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x, y - 1, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x, y, -3, width, height, coefficients, b, boundary);
+			}
+		}
+		else
+		{
+			for (int x = 0; x < width; ++x, ++id)
+			{
+				(*b)(id) += laplacian[y][x + 1];
+
+				// Discrete laplacian star
+				insertCoefficientNoHorizontalBoundary(id, x - 1, y, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x + 1, y, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x, y - 1, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x, y + 1, 1, width, height, coefficients, b, boundary);
+				insertCoefficientNoHorizontalBoundary(id, x, y, -4, width, height, coefficients, b, boundary);
+			}
+		}
+	}
+}
+
+void poissonSolverSparse(const ScalarField& margin, const ScalarField& boundary, const bool bUseHorizontalBoundary, ScalarField* output)
 {
 	assert(margin.size() == boundary.size());
 	assert(margin[0].size() == boundary[0].size());
 
 	const int width = margin[0].size();
 	const int height = margin.size();
-	const int variableCount = (width - 2) * (height - 2);
+	const int variableWidth = width - 2;
+	const int variableHeight = bUseHorizontalBoundary ? height - 2 : height;
+	const int variableCount = variableWidth * variableHeight;
 
 	resizeField(width, height, output);
 
@@ -693,7 +762,11 @@ void poissonSolverSparse(const ScalarField& margin, const ScalarField& boundary,
 
 	cout << "Building sparse linear system..." << endl;
 
-	buildProblem(&coefficients, &b, margin, boundary);
+	if (bUseHorizontalBoundary)
+		buildPoissonProblem(&coefficients, &b, margin, boundary);
+	else
+		buildPoissonProblemNoHorizontalBoundary(&coefficients, &b, margin, boundary);
+
 	A.setFromTriplets(coefficients.begin(), coefficients.end());
 
 	cout << "Solving linear system (simplicial cholesky)..." << endl;
@@ -705,8 +778,10 @@ void poissonSolverSparse(const ScalarField& margin, const ScalarField& boundary,
 	copyField(boundary, output);
 
 	// Copy over output
+	int yStart = bUseHorizontalBoundary ? 1 : 0;
+	int yEnd = bUseHorizontalBoundary ? height - 1 : height;
 	int id = 0;
-	for (int y = 1; y < height - 1; ++y)
+	for (int y = yStart; y < yEnd; ++y)
 		for (int x = 1; x < width - 1; ++x, ++id)
 			(*output)[y][x] = static_cast<float>(fmin(fmax(result(id), 0.0f), 1.0f));
 }
@@ -962,7 +1037,7 @@ int main(int argc, char** argv)
 		if (mode == PoissonStitch)
 			poissonSolver(laplacian, boundary, &result);
 		else if (mode == PoissonStitchSparse)
-			poissonSolverSparse(laplacian, boundary, &result);
+			poissonSolverSparse(laplacian, boundary, POISSON_USE_TOP_BOUNDARY_CONDITIONS, &result);
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
