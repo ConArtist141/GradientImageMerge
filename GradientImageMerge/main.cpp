@@ -6,20 +6,26 @@
 #include <algorithm>
 #include <cmath>
 
+#define _USE_MATH_DEFINES
+#include <math.h>
+
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
-#include "Eigen/LU"
+#include <Eigen/LU>
+#include <Eigen/Sparse>
+#include <Eigen/OrderingMethods>
+
 #include "imagewin32.h"
 #include "lodepng.h"
 #include "GridGraph_2D_4C.h"
 
-#define DEFAULT_IMAGE_SOURCE_1 "goat2.png"
-#define DEFAULT_IMAGE_SOURCE_2 "cat2.png"
+#define DEFAULT_IMAGE_SOURCE_1 "goat.png"
+#define DEFAULT_IMAGE_SOURCE_2 "cat.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
-#define DEFAULT_STITCH_MARGIN 50
-#define DEFAULT_MODE PoissonStitch
+#define DEFAULT_STITCH_MARGIN 100
+#define DEFAULT_MODE PoissonStitchSparse
 
 // It seems that setting the gradient epsilon > 0.5f causes a strange feedback effect
 // The same is true for laplace and > 0.25f
@@ -41,6 +47,7 @@ enum ProgramMode
 	GradientStitch,
 	LaplaceStitch,
 	PoissonStitch,
+	PoissonStitchSparse,
 	ComputeGradient,
 };
 
@@ -428,7 +435,7 @@ unsigned int saveFloatMatrixToPNG(const string& filename, const ScalarField& dat
 }
 
 // Solve using standard gradient descent
-void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorField, 
+void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorField,
 	const int iterations, const float epsilon, const bool bVerticalBoundaryConstraints,
 	const bool bHorizontalBoundaryConstraints, ScalarField* output)
 {
@@ -440,7 +447,7 @@ void gradientDescent(const ScalarField& initialGuess, const VectorField& vectorF
 
 	ScalarField tempField1;
 	ScalarField tempField2;
-	
+
 	// Copy over initial geuss
 	resizeField(width, height, output);
 	resizeField(width, height, &tempField1);
@@ -548,7 +555,7 @@ void laplacianDescent(const ScalarField& initialGuess, const ScalarField& laplac
 }
 
 // Solve using poisson equation
-void PoissonSolver(const ScalarField& margin, const ScalarField& boundary, ScalarField* output)
+void poissonSolver(const ScalarField& margin, const ScalarField& boundary, ScalarField* output)
 {
 	assert(margin.size() == boundary.size());
 	assert(margin[0].size() == boundary[0].size());
@@ -557,15 +564,14 @@ void PoissonSolver(const ScalarField& margin, const ScalarField& boundary, Scala
 	auto gridWidth = margin[0].size();
 	auto gridHeight = margin.size();
 	auto N = gridWidth * gridHeight;
-	cout << gridWidth << endl;
-	cout << gridHeight << endl;
-	cout << N << endl;
 	Eigen::MatrixXf A(N, N);
 	Eigen::VectorXf b(N);
 	Eigen::VectorXf z;
 	unordered_map<int, pair<int, int>> index_to_gridindex;
 	unordered_map<pair<int, int>, int, pairhash> gridindex_to_index;
 	vector<bool> index_is_boundary;
+
+	cout << "Setting up linear system..." << endl;
 
 	for (size_t i = 0; i < N; ++i)
 	{
@@ -616,13 +622,93 @@ void PoissonSolver(const ScalarField& margin, const ScalarField& boundary, Scala
 			A(x, var) = 1;
 		}
 	}
+
+	cout << "Solving system..." << endl;
+
 	z = A.lu().solve(b);
 
 	for (size_t i = 0; i < N; ++i)
 	{
 		pair<int, int> gridindex = index_to_gridindex[i];
-		(*output)[gridindex.first][gridindex.second] = min(max(z(i), 0.0f), 1.0f);
+		(*output)[gridindex.first][gridindex.second] = fmin(fmax(z(i), 0.0f), 1.0f);
 	}
+}
+
+typedef Eigen::Triplet<double> DTriplet;
+void insertCoefficient(int id, int x, int y, double w, const int width, const int height, std::vector<DTriplet>* coeffs,
+	Eigen::VectorXd* b, const ScalarField& boundary)
+{
+	int targetVariableId = x + y * width;
+	if (x == -1)
+		(*b)(id) -= w * boundary[y + 1][0]; // constrained coefficient
+	else if (x == width)
+		(*b)(id) -= w * boundary[y + 1][width + 1]; // constrained coefficient
+	else if (y == -1)
+		(*b)(id) -= w * boundary[0][x + 1]; // constrained coefficient
+	else if (y == height)
+		(*b)(id) -= w * boundary[height + 1][x + 1]; // constrained coefficient
+	else
+		coeffs->push_back(DTriplet(id, targetVariableId, w)); // unknown coefficient
+}
+
+void buildProblem(std::vector<DTriplet>* coefficients, Eigen::VectorXd* b, const ScalarField& laplacian,
+	const ScalarField& boundary)
+{
+	b->setZero();
+	const int width = laplacian[0].size() - 2;
+	const int height = laplacian.size() - 2;
+
+	int id = 0;
+	for (int y = 0; y < height; ++y)
+	{
+		for (int x = 0; x < width; ++x, ++id)
+		{
+			(*b)(id) += laplacian[y + 1][x + 1];
+
+			// Discrete laplacian star
+			insertCoefficient(id, x - 1, y, 1, width, height, coefficients, b, boundary);
+			insertCoefficient(id, x + 1, y, 1, width, height, coefficients, b, boundary);
+			insertCoefficient(id, x, y - 1, 1, width, height, coefficients, b, boundary);
+			insertCoefficient(id, x, y + 1, 1, width, height, coefficients, b, boundary);
+			insertCoefficient(id, x, y, -4, width, height, coefficients, b, boundary);
+		}
+	}
+}
+
+void poissonSolverSparse(const ScalarField& margin, const ScalarField& boundary, ScalarField* output)
+{
+	assert(margin.size() == boundary.size());
+	assert(margin[0].size() == boundary[0].size());
+
+	const int width = margin[0].size();
+	const int height = margin.size();
+	const int variableCount = (width - 2) * (height - 2);
+
+	resizeField(width, height, output);
+
+	// Construct the linear system
+	Eigen::VectorXd b(variableCount);
+	Eigen::SparseMatrix<double> A(variableCount, variableCount);
+	std::vector<DTriplet> coefficients;
+
+	cout << "Building sparse linear system..." << endl;
+
+	buildProblem(&coefficients, &b, margin, boundary);
+	A.setFromTriplets(coefficients.begin(), coefficients.end());
+
+	cout << "Solving linear system (simplicial cholesky)..." << endl;
+
+	// Solve the system
+	Eigen::SimplicialCholesky<Eigen::SparseMatrix<double> > chol(A);
+	Eigen::VectorXd result = chol.solve(b);
+
+	copyField(boundary, output);
+
+	// Copy over output
+	int id = 0;
+	for (int y = 1; y < height - 1; ++y)
+		for (int x = 1; x < width - 1; ++x, ++id)
+			(*output)[y][x] = static_cast<float>(fmin(fmax(result(id), 0.0f), 1.0f));
 }
 
 int main(int argc, char** argv)
@@ -769,7 +855,7 @@ int main(int argc, char** argv)
 		ScalarField initialGuess;
 		applyMask(image1Margin, image2Margin, mask, &initialGuess);
 		ScalarField result;
-		gradientDescent(initialGuess, mergedGradient, GRADIENT_DESCENT_ITERATIONS, 
+		gradientDescent(initialGuess, mergedGradient, GRADIENT_DESCENT_ITERATIONS,
 			GRADIENT_DESCENT_EPSILON, true, false, &result);
 
 		cout << "Merging..." << endl;
@@ -823,7 +909,11 @@ int main(int argc, char** argv)
 		break;
 	}
 	case PoissonStitch:
+	case PoissonStitchSparse:
 	{
+		if (mode == PoissonStitch)
+			cout << "Warning: Sparse poisson mode is recommended for large images..." << endl;
+
 		// Stitch the images together
 		ScalarField image1Margin;
 		ScalarField image1Remainder;
@@ -857,7 +947,10 @@ int main(int argc, char** argv)
 
 		cout << "Running Poisson solver..." << endl;
 		ScalarField result;
-		PoissonSolver(laplacian, boundary, &result);
+		if (mode == PoissonStitch)
+			poissonSolver(laplacian, boundary, &result);
+		else if (mode == PoissonStitchSparse)
+			poissonSolverSparse(laplacian, boundary, &result);
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
