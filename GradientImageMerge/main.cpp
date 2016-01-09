@@ -705,7 +705,7 @@ void buildPoissonProblemNoHorizontalBoundary(std::vector<DTriplet>* coefficients
 			{
 				(*b)(id) += laplacian[y][x + 1];
 
-				// Discrete laplacian star
+				// Discrete laplacian star on top boundary
 				insertCoefficientNoHorizontalBoundary(id, x - 1, y, 1, width, height, coefficients, b, boundary);
 				insertCoefficientNoHorizontalBoundary(id, x + 1, y, 1, width, height, coefficients, b, boundary);
 				insertCoefficientNoHorizontalBoundary(id, x, y + 1, 1, width, height, coefficients, b, boundary);
@@ -718,7 +718,7 @@ void buildPoissonProblemNoHorizontalBoundary(std::vector<DTriplet>* coefficients
 			{
 				(*b)(id) += laplacian[y][x + 1];
 
-				// Discrete laplacian star
+				// Discrete laplacian star on bottom boundary
 				insertCoefficientNoHorizontalBoundary(id, x - 1, y, 1, width, height, coefficients, b, boundary);
 				insertCoefficientNoHorizontalBoundary(id, x + 1, y, 1, width, height, coefficients, b, boundary);
 				insertCoefficientNoHorizontalBoundary(id, x, y - 1, 1, width, height, coefficients, b, boundary);
