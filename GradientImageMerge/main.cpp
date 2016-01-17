@@ -1,3 +1,24 @@
+/*
+ * Gradient Image Merge
+ *
+ * Authors: Philip Etter, Alex Yu
+ *
+ * Usage: GradientImageMerge [Image1] [Image2] [MarginWidth] [ProgramMode] [Output]
+ *
+ * NOTE: All parameters optional.
+ * Image1 - The file path to the first image.
+ * Image2 - The file path to the second image.
+ * MarginWidth - The width of the margin between the two images.
+ * ProgramMode - Specifies the mode of the program, corresponds to the
+ *		ProgramMode enumeration.
+ * Output - Specifies the file path of the output. If not given, on Windows
+ *		the output will be displayed in a window. On other platforms, the output
+ *		will be written to "result.png"
+ *
+ * Compilation Notes: requires the linear algebra library Eigen. Place Eigen in
+ * a directory named External/
+ */
+
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -25,10 +46,10 @@
 #define DEFAULT_IMAGE_SOURCE_2 "mountains3.png"
 #define DEFAULT_IMAGE_OUTPUT "result.png"
 #define DEFAULT_STITCH_MARGIN 200
-#define DEFAULT_MODE PoissonStitchSparse
+#define DEFAULT_MODE PoissonStitch
 
-// It seems that setting the gradient epsilon > 0.5f causes a strange feedback effect
-// The same is true for laplace and > 0.25f
+ // It seems that setting the gradient epsilon > 0.5f causes a strange feedback effect
+ // The same is true for laplace and > 0.25f
 #define GRADIENT_DESCENT_ITERATIONS 20
 #define GRADIENT_DESCENT_EPSILON 0.5f
 #define LAPLACIAN_DESCENT_ITERATIONS 40
@@ -42,13 +63,20 @@ using namespace std;
 // Program mode
 enum ProgramMode
 {
+	// Perform a simple image stitching using the basic min-cut technique
 	SimpleStitch,
+	// Attempt to recover an image from its gradient information using gradient descent
 	RecoverFromGradient,
+	// Attempt to recover an image from its laplace information using the laplace
+	// version of gradient descent
 	RecoverFromLaplace,
+	// Stitch two images together using the basic gradient descent algorithm
 	GradientStitch,
+	// Stitch two images together using the laplace version of the gradient descent algorithm
 	LaplaceStitch,
+	// Stitch two images together using the poisson algorithm
 	PoissonStitch,
-	PoissonStitchSparse,
+	// Compute the gradient of an image
 	ComputeGradient,
 };
 
@@ -555,86 +583,6 @@ void laplacianDescent(const ScalarField& initialGuess, const ScalarField& laplac
 	copyField(*readField, output);
 }
 
-// Solve using poisson equation
-void poissonSolver(const ScalarField& margin, const ScalarField& boundary, ScalarField* output)
-{
-	assert(margin.size() == boundary.size());
-	assert(margin[0].size() == boundary[0].size());
-	resizeField(margin[0].size(), margin.size(), output);
-
-	auto gridWidth = margin[0].size();
-	auto gridHeight = margin.size();
-	auto N = gridWidth * gridHeight;
-	Eigen::MatrixXf A(N, N);
-	Eigen::VectorXf b(N);
-	Eigen::VectorXf z;
-	unordered_map<int, pair<int, int>> index_to_gridindex;
-	unordered_map<pair<int, int>, int, pairhash> gridindex_to_index;
-	vector<bool> index_is_boundary;
-
-	cout << "Setting up linear system..." << endl;
-
-	for (size_t i = 0; i < N; ++i)
-	{
-		pair<int, int> gridindex;
-		gridindex.first = i / gridWidth;
-		gridindex.second = i % gridWidth;
-		bool is_boundary = false;
-		bool on_y_boundary = (gridindex.first == 0) || (gridindex.first == gridHeight - 1);
-		bool on_x_boundary = (gridindex.second == 0) || (gridindex.second == gridWidth - 1);
-		if (on_y_boundary || on_x_boundary)
-		{
-			is_boundary = true;
-		}
-		index_to_gridindex[i] = gridindex;
-		gridindex_to_index[gridindex] = i;
-		index_is_boundary.push_back(is_boundary);
-	}
-
-	for (size_t x = 0; x < N; ++x)
-	{
-		pair<int, int> gridindex = index_to_gridindex[x];
-		for (size_t y = 0; y < N; ++y)
-			A(x, y) = 0;
-
-		if (index_is_boundary[x])
-		{
-			A(x, x) = 1;
-			b(x) = boundary[gridindex.first][gridindex.second];
-			continue;
-		}
-
-		b(x) = margin[gridindex.first][gridindex.second];
-		unordered_set<int> active_variables;
-
-		pair<int, int> gridindex_down(gridindex.first + 1, gridindex.second);
-		pair<int, int> gridindex_up(gridindex.first - 1, gridindex.second);
-		pair<int, int> gridindex_left(gridindex.first, gridindex.second - 1);
-		pair<int, int> gridindex_right(gridindex.first, gridindex.second + 1);
-
-		active_variables.insert(gridindex_to_index[gridindex_right]);
-		active_variables.insert(gridindex_to_index[gridindex_left]);
-		active_variables.insert(gridindex_to_index[gridindex_up]);
-		active_variables.insert(gridindex_to_index[gridindex_down]);
-
-		A(x, x) = -4;
-		for (const auto& var : active_variables)
-		{
-			A(x, var) = 1;
-		}
-	}
-
-	cout << "Solving system..." << endl;
-
-	z = A.lu().solve(b);
-
-	for (size_t i = 0; i < N; ++i)
-	{
-		pair<int, int> gridindex = index_to_gridindex[i];
-		(*output)[gridindex.first][gridindex.second] = fmin(fmax(z(i), 0.0f), 1.0f);
-	}
-}
-
 typedef Eigen::Triplet<double> DTriplet;
 void insertCoefficient(int id, int x, int y, double w, const int width, const int height, std::vector<DTriplet>* coeffs,
 	Eigen::VectorXd* b, const ScalarField& boundary)
@@ -996,11 +944,7 @@ int main(int argc, char** argv)
 		break;
 	}
 	case PoissonStitch:
-	case PoissonStitchSparse:
 	{
-		if (mode == PoissonStitch)
-			cout << "Warning: Sparse poisson mode is recommended for large images..." << endl;
-
 		// Stitch the images together
 		ScalarField image1Margin;
 		ScalarField image1Remainder;
@@ -1034,10 +978,7 @@ int main(int argc, char** argv)
 
 		cout << "Running Poisson solver..." << endl;
 		ScalarField result;
-		if (mode == PoissonStitch)
-			poissonSolver(laplacian, boundary, &result);
-		else if (mode == PoissonStitchSparse)
-			poissonSolverSparse(laplacian, boundary, POISSON_USE_TOP_BOUNDARY_CONDITIONS, &result);
+		poissonSolverSparse(laplacian, boundary, POISSON_USE_TOP_BOUNDARY_CONDITIONS, &result);
 
 		cout << "Merging..." << endl;
 		vector<ScalarField*> mergeParams = { &image1Remainder, &result, &image2Remainder };
@@ -1080,7 +1021,7 @@ int main(int argc, char** argv)
 			bUseFileOutput = true;
 #endif
 		}
-		
+
 		// File output mode
 		if (bUseFileOutput)
 		{
@@ -1093,8 +1034,8 @@ int main(int argc, char** argv)
 				cout << "Failed to save result!" << endl;
 				return EXIT_FAILURE;
 			}
-		}
 	}
+}
 
 	cout << "Success!" << endl;
 	return EXIT_SUCCESS;
