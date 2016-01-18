@@ -64,20 +64,20 @@ using namespace std;
 enum ProgramMode
 {
 	// Perform a simple image stitching using the basic min-cut technique
-	SimpleStitch,
+	SimpleStitch = 0,
 	// Attempt to recover an image from its gradient information using gradient descent
-	RecoverFromGradient,
+	RecoverFromGradient = 1,
 	// Attempt to recover an image from its laplace information using the laplace
 	// version of gradient descent
-	RecoverFromLaplace,
+	RecoverFromLaplace = 2,
 	// Stitch two images together using the basic gradient descent algorithm
-	GradientStitch,
+	GradientStitch = 3,
 	// Stitch two images together using the laplace version of the gradient descent algorithm
-	LaplaceStitch,
+	LaplaceStitch = 4,
 	// Stitch two images together using the poisson algorithm
-	PoissonStitch,
+	PoissonStitch = 5,
 	// Compute the gradient of an image
-	ComputeGradient,
+	ComputeGradient = 6,
 };
 
 struct pairhash {

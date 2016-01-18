@@ -1,3 +1,9 @@
+/*
+ * Author: Philip Etter
+ *
+ * Description: An image viewer on the Windows platform
+ */
+
 #ifdef _WIN32
 
 #include <windows.h>
